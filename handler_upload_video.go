@@ -9,7 +9,9 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -85,7 +87,22 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to process file", err)
+		return
 	}
+
+	processVideoFilePath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to generate fast start", err)
+		return
+	}
+	defer os.Remove(processVideoFilePath)
+
+	fastStartFile, err := os.Open(processVideoFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to get fast start file", err)
+		return
+	}
+	defer fastStartFile.Close()
 
 	var prefix string
 	if aspectRatio == "16:9" {
@@ -96,21 +113,23 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		prefix = "other"
 	}
 
-	_, err = tempFile.Seek(0, io.SeekStart)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error reading the file", err)
-		return
-	}
+	/*
+		_, err = tempFile.Seek(0, io.SeekStart)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Error reading the file", err)
+			return
+		}
+	*/
 
 	key := make([]byte, 32)
 	rand.Read(key)
 	keyEncoding := hex.EncodeToString(key)
-	s3Key := fmt.Sprintf("/%s/%s.mp4", prefix, keyEncoding)
+	s3Key := fmt.Sprintf("%s,%s/%s.mp4", cfg.s3Bucket, prefix, keyEncoding)
 
 	cfg.s3client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &s3Key,
-		Body:        tempFile,
+		Body:        fastStartFile,
 		ContentType: &mediaType,
 	})
 
@@ -125,4 +144,19 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusOK, updatedVideo)
+}
+
+func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
+	s3Presign := s3.NewPresignClient(s3Client)
+
+	presignedReq, err := s3Presign.PresignGetObject(context.TODO(), &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(expireTime))
+
+	if err != nil {
+		return "", err
+	}
+
+	return presignedReq.URL, nil
 }

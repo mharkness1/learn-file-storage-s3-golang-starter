@@ -9,9 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
-	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -124,18 +122,21 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	key := make([]byte, 32)
 	rand.Read(key)
 	keyEncoding := hex.EncodeToString(key)
-	s3Key := fmt.Sprintf("%s,%s/%s.mp4", cfg.s3Bucket, prefix, keyEncoding)
+	cdnKey := fmt.Sprintf("%s/%s.mp4", prefix, keyEncoding)
 
 	cfg.s3client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
-		Key:         &s3Key,
+		Key:         &cdnKey,
 		Body:        fastStartFile,
 		ContentType: &mediaType,
 	})
 
-	s3Url := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, s3Key)
+	cdnUrl := fmt.Sprintf("%s/%s", cfg.s3CfDistribution, cdnKey)
+
 	updatedVideo := databaseVideo
-	updatedVideo.VideoURL = &s3Url
+	updatedVideo.VideoURL = &cdnUrl
+
+	fmt.Printf("%s", cdnUrl)
 
 	err = cfg.db.UpdateVideo(updatedVideo)
 	if err != nil {
@@ -144,19 +145,4 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusOK, updatedVideo)
-}
-
-func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
-	s3Presign := s3.NewPresignClient(s3Client)
-
-	presignedReq, err := s3Presign.PresignGetObject(context.TODO(), &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-	}, s3.WithPresignExpires(expireTime))
-
-	if err != nil {
-		return "", err
-	}
-
-	return presignedReq.URL, nil
 }
